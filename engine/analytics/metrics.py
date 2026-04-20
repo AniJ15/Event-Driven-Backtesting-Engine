@@ -31,3 +31,47 @@ def compute_metrics(equity_curve: pd.DataFrame, total_trade_notional: float) -> 
         "annualized_volatility": round(volatility, 4),
         "turnover": round(turnover, 4),
     }
+
+
+def compute_symbol_metrics(
+    market_data: pd.DataFrame,
+    fills_frame: pd.DataFrame,
+    symbol_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    if market_data.empty:
+        return pd.DataFrame()
+
+    rows: list[dict[str, float | int | str]] = []
+    fills_by_symbol = (
+        fills_frame.groupby("symbol").agg(trade_count=("quantity", "count")) if not fills_frame.empty else None
+    )
+    summary_lookup = symbol_summary.set_index("symbol") if not symbol_summary.empty else pd.DataFrame()
+
+    for symbol, group in market_data.groupby("symbol"):
+        group = group.sort_values("timestamp").reset_index(drop=True)
+        buy_hold_return = group["close"].iloc[-1] / group["close"].iloc[0] - 1.0
+        trade_count = 0 if fills_by_symbol is None or symbol not in fills_by_symbol.index else int(
+            fills_by_symbol.loc[symbol, "trade_count"]
+        )
+
+        realized = 0.0
+        unrealized = 0.0
+        position = 0
+        if not summary_lookup.empty and symbol in summary_lookup.index:
+            row = summary_lookup.loc[symbol]
+            realized = float(row["realized_pnl"])
+            unrealized = float(row["unrealized_pnl"])
+            position = int(row["position"])
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "buy_hold_return": round(buy_hold_return, 4),
+                "trade_count": trade_count,
+                "position": position,
+                "realized_pnl": round(realized, 2),
+                "unrealized_pnl": round(unrealized, 2),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values("symbol").reset_index(drop=True)

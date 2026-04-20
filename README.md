@@ -1,31 +1,72 @@
 # Event-Driven Backtesting Engine
 
-A modular, event-driven trading simulation engine inspired by production trading systems.
+A modular, event-driven trading simulation engine that now acts like a small strategy research lab.
 
-This project models the full lifecycle of a trade:
+This version supports:
 
-`market data -> strategy signal -> portfolio order -> execution fill -> portfolio/PnL update`
+- multi-asset event-driven simulation
+- 5 to 6 years of bundled sample data
+- train/test splits over time
+- multiple technical and ML-style strategies
+- out-of-sample comparison across strategies
+- a live local app for comparing test-set results
 
-The goal is realism and extensibility, not just return calculation.
+## What it does now
 
-## Implemented in this first version
+The engine trains each strategy on the first part of the historical data and then tests that strategy on the later part of the data using the full event-driven trading simulation.
 
-- Event-driven architecture with explicit `MarketEvent`, `SignalEvent`, `OrderEvent`, and `FillEvent`
-- CSV-based historical market data feed
-- Single-symbol moving-average crossover strategy
-- Portfolio accounting with cash, positions, average cost, realized PnL, unrealized PnL, and equity tracking
-- Execution simulation with:
-  - latency
-  - slippage
-  - spread costs
-  - fixed + percentage commissions
-  - partial fills based on bar volume participation
-- Performance analytics:
-  - cumulative return
-  - Sharpe ratio
-  - max drawdown
-  - annualized volatility
-  - turnover
+That means the workflow is:
+
+`historical data -> train models/strategy state -> replay test set through event engine -> compare out-of-sample results`
+
+## Included strategies
+
+- `moving_average`
+  - moving-average crossover trend strategy
+- `mean_reversion`
+  - z-score mean reversion strategy
+- `linear_regression`
+  - predicts next-bar return from engineered features
+- `logistic_regression`
+  - predicts up/down direction from engineered features
+
+## Features used by the ML-style strategies
+
+The regression/classification strategies train on features such as:
+
+- 1-day return
+- 3-day return
+- 5-day return
+- 10-day momentum
+- 20-day momentum
+- 10-day volatility
+- 10-day volume z-score
+
+## Risk controls
+
+The backtest still includes:
+
+- per-symbol exposure caps
+- gross leverage cap
+- stop-loss exits
+- max drawdown portfolio de-risking
+
+## Data
+
+The bundled sample data now includes roughly 7 calendar years of daily business-day bars from `2018-01-02` through `2024-12-31` for:
+
+- `AAPL`
+- `MSFT`
+- `SPY`
+- `QQQ`
+- `NVDA`
+- `AMZN`
+
+Each file is in `sample_data/` and uses:
+
+```text
+timestamp,open,high,low,close,volume
+```
 
 ## Project structure
 
@@ -39,79 +80,114 @@ engine/
     broker.py
   portfolio/
     portfolio.py
+  risk/
+    engine.py
   strategy/
     base.py
+    features.py
+    mean_reversion.py
+    ml_models.py
     moving_average.py
+    router.py
+  app.py
   events.py
   main.py
+  reporting.py
 sample_data/
   AAPL.csv
-requirements.txt
+  AMZN.csv
+  MSFT.csv
+  NVDA.csv
+  QQQ.csv
+  SPY.csv
 ```
 
-## Quick start
+## Run the comparison suite
 
-Install dependencies:
+From the repo root:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python3 -m engine.main \
+  --data-dir sample_data \
+  --symbols AAPL,MSFT,SPY,QQQ,NVDA,AMZN \
+  --train-ratio 0.7
 ```
 
-Run the sample backtest:
+By default, that compares:
+
+- `moving_average`
+- `mean_reversion`
+- `linear_regression`
+- `logistic_regression`
+
+You can limit the suite:
 
 ```bash
-python -m engine.main --csv sample_data/AAPL.csv --symbol AAPL
+python3 -m engine.main \
+  --data-dir sample_data \
+  --symbols AAPL,MSFT,SPY \
+  --strategies moving_average,linear_regression \
+  --train-ratio 0.75
 ```
 
-## Example output
+The CLI prints:
 
-The engine prints:
+- train/test split details
+- side-by-side strategy comparison on the test set
 
-- a performance summary
-- final portfolio state
+It also writes:
+
+```text
+artifacts/backtest_results.json
+```
+
+## Run the live local app
+
+```bash
+python3 -m engine.app \
+  --data-dir sample_data \
+  --symbols AAPL,MSFT,SPY,QQQ,NVDA,AMZN \
+  --train-ratio 0.7
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+## What the app shows
+
+- train/test split summary
+- test-set comparison table across strategies
+- overlaid equity curves for each strategy on the test set
+- selected-strategy metrics
+- training summary for the selected model/strategy
+- per-symbol test metrics
+- portfolio state by symbol
+- risk events
 - recent fills
-- the tail of the equity curve
 
-## Architecture overview
+You can:
 
-### Events
-
-All state changes move through an in-memory event queue:
-
-- `MarketEvent`: emitted by the data handler for each new bar
-- `SignalEvent`: emitted by the strategy
-- `OrderEvent`: emitted by the portfolio
-- `FillEvent`: emitted by the execution engine
-
-### Main loop
-
-For each bar:
-
-1. Data handler emits a `MarketEvent`
-2. Execution engine checks whether delayed orders can now fill
-3. Portfolio marks positions to market
-4. Strategy consumes market data and emits signals
-5. Portfolio turns signals into orders
-6. Broker turns orders into fills
-7. Portfolio updates positions, cash, and PnL
+- filter by strategy
+- filter by symbol
+- refresh the current view
+- rerun the full train/test suite
+- auto-refresh the dashboard
 
 ## Current limitations
 
-- Single-symbol demo strategy
-- Bar-based simulation, not tick-level
-- No live broker integration yet
-- No dedicated risk engine yet
+- bundled data is synthetic sample data, not vendor data
+- simulation is bar-based, not tick-level
+- ML models are lightweight in-repo implementations, not full production pipelines
+- no hyperparameter search, cross-validation, or feature-selection framework yet
+- no model persistence yet
 
-## Suggested next steps
+## Good next steps
 
-- Add multi-asset support
-- Add limit-order persistence and cancel/replace workflows
-- Add a risk layer with exposure limits and drawdown controls
-- Add benchmark comparison and plotting
-- Add Numba optimization for hot paths
-
-## Resume-ready description
-
-Designed and implemented a modular, event-driven backtesting engine simulating production trading workflows from market data ingestion through signal generation, order management, execution, and portfolio accounting. Built realistic execution models including slippage, spread, latency, commissions, and partial fills, and added analytics for PnL, turnover, drawdown, and Sharpe ratio.
+- add more models such as ridge regression, tree-based methods, or small neural nets
+- add benchmark comparison by strategy
+- add walk-forward retraining instead of one fixed train/test split
+- add feature-importance or coefficient inspection panels in the app
+- add pytest coverage for the train/test and model-training paths

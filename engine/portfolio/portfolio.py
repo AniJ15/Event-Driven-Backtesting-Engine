@@ -11,10 +11,16 @@ from engine.events import FillEvent, MarketEvent, OrderEvent, SignalEvent
 class Portfolio:
     """Tracks positions, cash, and equity over time."""
 
-    def __init__(self, initial_cash: float = 100_000.0, base_order_size: int = 100) -> None:
+    def __init__(
+        self,
+        initial_cash: float = 100_000.0,
+        base_order_size: int = 100,
+        order_size_by_symbol: dict[str, int] | None = None,
+    ) -> None:
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.base_order_size = base_order_size
+        self.order_size_by_symbol = order_size_by_symbol or {}
 
         self.positions: dict[str, int] = {}
         self.average_cost: dict[str, float] = {}
@@ -24,6 +30,10 @@ class Portfolio:
         self.total_commission = 0.0
         self.total_slippage = 0.0
         self.trade_notional = 0.0
+        self.realized_pnl_by_symbol: dict[str, float] = {}
+        self.trade_notional_by_symbol: dict[str, float] = {}
+        self.commission_by_symbol: dict[str, float] = {}
+        self.slippage_by_symbol: dict[str, float] = {}
 
         self.fills: list[dict[str, object]] = []
         self.equity_curve: list[dict[str, float | object]] = []
@@ -36,7 +46,7 @@ class Portfolio:
 
     def on_signal(self, event: SignalEvent, event_queue: Queue) -> None:
         current_position = self.positions.get(event.symbol, 0)
-        target_position = self._target_position_for_signal(event.direction)
+        target_position = self.resolve_target_position(event.symbol, event)
         order_quantity = target_position - current_position
 
         if order_quantity == 0:
@@ -68,9 +78,15 @@ class Portfolio:
         self.positions[symbol] = next_position
         self.average_cost[symbol] = next_average_cost if next_position != 0 else 0.0
         self.realized_pnl += realized_change
+        self.realized_pnl_by_symbol[symbol] = self.realized_pnl_by_symbol.get(symbol, 0.0) + realized_change
         self.total_commission += event.commission
         self.total_slippage += event.slippage_cost
         self.trade_notional += abs(fill_qty * fill_price)
+        self.trade_notional_by_symbol[symbol] = self.trade_notional_by_symbol.get(symbol, 0.0) + abs(
+            fill_qty * fill_price
+        )
+        self.commission_by_symbol[symbol] = self.commission_by_symbol.get(symbol, 0.0) + event.commission
+        self.slippage_by_symbol[symbol] = self.slippage_by_symbol.get(symbol, 0.0) + event.slippage_cost
 
         self.cash -= (fill_qty * fill_price) + event.commission
         self.fills.append(asdict(event))
@@ -111,6 +127,42 @@ class Portfolio:
     def get_fills_frame(self) -> pd.DataFrame:
         return pd.DataFrame(self.fills)
 
+    def get_symbol_summary_frame(self) -> pd.DataFrame:
+        symbols = sorted(
+            set(self.positions)
+            | set(self.latest_prices)
+            | set(self.realized_pnl_by_symbol)
+            | set(self.trade_notional_by_symbol)
+        )
+        rows: list[dict[str, float | int | str]] = []
+        for symbol in symbols:
+            quantity = self.positions.get(symbol, 0)
+            latest_price = self.latest_prices.get(symbol, 0.0)
+            average_cost = self.average_cost.get(symbol, 0.0)
+            market_value = quantity * latest_price
+            unrealized = 0.0 if quantity == 0 else (latest_price - average_cost) * quantity
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "position": quantity,
+                    "latest_price": latest_price,
+                    "average_cost": average_cost,
+                    "market_value": market_value,
+                    "realized_pnl": self.realized_pnl_by_symbol.get(symbol, 0.0),
+                    "unrealized_pnl": unrealized,
+                    "commission": self.commission_by_symbol.get(symbol, 0.0),
+                    "slippage": self.slippage_by_symbol.get(symbol, 0.0),
+                    "trade_notional": self.trade_notional_by_symbol.get(symbol, 0.0),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def resolve_target_position(self, symbol: str, event: SignalEvent) -> int:
+        target_override = event.metadata.get("target_quantity")
+        if target_override is not None:
+            return int(float(target_override))
+        return self._target_position_for_symbol(symbol, event.direction)
+
     def summary(self) -> dict[str, float]:
         return {
             "cash": round(self.cash, 2),
@@ -123,11 +175,12 @@ class Portfolio:
             "leverage": round(self.leverage(), 4),
         }
 
-    def _target_position_for_signal(self, direction: str) -> int:
+    def _target_position_for_symbol(self, symbol: str, direction: str) -> int:
+        size = self.order_size_by_symbol.get(symbol, self.base_order_size)
         if direction == "LONG":
-            return self.base_order_size
+            return size
         if direction == "SHORT":
-            return -self.base_order_size
+            return -size
         return 0
 
     def _record_equity_snapshot(self, timestamp: object) -> None:
